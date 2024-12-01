@@ -98,7 +98,6 @@
         catch_exceptions: true,
         throw_errors: true,
         allow_scripts: false, //if set to true some nodes like Formula would be allowed to evaluate code that comes from unsafe sources (like node configuration), which could lead to exploits
-        use_deferred_actions: true, //executes actions during the graph execution flow
         registered_node_types: {}, //nodetypes by string
         node_types_by_file_extension: {}, //used for dropping files in the canvas
         Nodes: {}, //node types by classname
@@ -329,55 +328,6 @@
         },
         
         /**
-         * Create a new nodetype by passing an object with some properties
-         * like onCreate, inputs:Array, outputs:Array, properties, onExecute
-         * @method buildNodeClassFromObject
-         * @param {String} name node name with namespace (p.e.: 'math/sum')
-         * @param {Object} object methods expected onCreate, inputs, outputs, properties, onExecute
-         */
-         buildNodeClassFromObject: function(
-            name,
-            object
-        ) {
-            var ctor_code = "";
-            if(object.inputs)
-            for(var i=0; i < object.inputs.length; ++i)
-            {
-                var _name = object.inputs[i][0];
-                var _type = object.inputs[i][1];
-                if(_type && _type.constructor === String)
-                    _type = '"'+_type+'"';
-                ctor_code += "this.addInput('"+_name+"',"+_type+");\n";
-            }
-            if(object.outputs)
-            for(var i=0; i < object.outputs.length; ++i)
-            {
-                var _name = object.outputs[i][0];
-                var _type = object.outputs[i][1];
-                if(_type && _type.constructor === String)
-                    _type = '"'+_type+'"';
-                ctor_code += "this.addOutput('"+_name+"',"+_type+");\n";
-            }
-            if(object.properties)
-            for(var i in object.properties)
-            {
-                var prop = object.properties[i];
-                if(prop && prop.constructor === String)
-                    prop = '"'+prop+'"';
-                ctor_code += "this.addProperty('"+i+"',"+prop+");\n";
-            }
-            ctor_code += "if(this.onCreate)this.onCreate()";
-            var classobj = Function(ctor_code);
-            for(var i in object)
-                if(i!="inputs" && i!="outputs" && i!="properties")
-                    classobj.prototype[i] = object[i];
-            classobj.title = object.title || name.split("/").pop();
-            classobj.desc = object.desc || "Generated from object";
-            this.registerNodeType(name, classobj);
-            return classobj;
-        },
-        
-        /**
          * Create a new nodetype by passing a function, it wraps it with a proper class and generates inputs according to the parameters of the function.
          * Useful to wrap simple methods that do not require properties, and that only process some input to generate an output.
          * @method wrapFunctionAsNode
@@ -396,31 +346,20 @@
         ) {
             var params = Array(func.length);
             var code = "";
-            if(param_types !== null) //null means no inputs
-            {
-                var names = LiteGraph.getParameterNames(func);
-                for (var i = 0; i < names.length; ++i) {
-                    var type = 0;
-                    if(param_types)
-                    {
-                        //type = param_types[i] != null ? "'" + param_types[i] + "'" : "0";
-                        if( param_types[i] != null && param_types[i].constructor === String )
-                            type = "'" + param_types[i] + "'" ;
-                        else if( param_types[i] != null )
-                            type = param_types[i];
-                    } 
-                    code +=
-                        "this.addInput('" +
-                        names[i] +
-                        "'," +
-                        type +
-                        ");\n";
-                }
+            var names = LiteGraph.getParameterNames(func);
+            for (var i = 0; i < names.length; ++i) {
+                code +=
+                    "this.addInput('" +
+                    names[i] +
+                    "'," +
+                    (param_types && param_types[i]
+                        ? "'" + param_types[i] + "'"
+                        : "0") +
+                    ");\n";
             }
-            if(return_type !== null) //null means no output
             code +=
                 "this.addOutput('out'," +
-                (return_type != null ? (return_type.constructor === String ? "'" + return_type + "'" : return_type) : 0) +
+                (return_type ? "'" + return_type + "'" : 0) +
                 ");\n";
             if (properties) {
                 code +=
@@ -437,7 +376,6 @@
                 this.setOutputData(0, r);
             };
             this.registerNodeType(name, classobj);
-            return classobj;
         },
 
         /**
@@ -1059,10 +997,6 @@
         var start = LiteGraph.getTime();
         this.globaltime = 0.001 * (start - this.starttime);
 
-        //not optimal: executes possible pending actions in node, problem is it is not optimized
-        //it is done here as if it was done in the later loop it wont be called in the node missed the onExecute
-        
-        //from now on it will iterate only on executable nodes which is faster
         var nodes = this._nodes_executable
             ? this._nodes_executable
             : this._nodes;
@@ -1077,8 +1011,6 @@
             for (var i = 0; i < num; i++) {
                 for (var j = 0; j < limit; ++j) {
                     var node = nodes[j];
-                    if(LiteGraph.use_deferred_actions && node._waiting_actions && node._waiting_actions.length)
-                        node.executePendingActions();
                     if (node.mode == LiteGraph.ALWAYS && node.onExecute) {
                         //wrap node.onExecute();
 						node.doExecute();
@@ -1094,14 +1026,12 @@
             if (this.onAfterExecute) {
                 this.onAfterExecute();
             }
-        } else { //catch errors
+        } else {
             try {
                 //iterations
                 for (var i = 0; i < num; i++) {
                     for (var j = 0; j < limit; ++j) {
                         var node = nodes[j];
-                        if(LiteGraph.use_deferred_actions && node._waiting_actions && node._waiting_actions.length)
-                            node.executePendingActions();
                         if (node.mode == LiteGraph.ALWAYS && node.onExecute) {
                             node.onExecute();
                         }
@@ -2602,7 +2532,7 @@
 				var w = this.widgets[i];
 				if(!w)
 					continue;
-				if(w.options && w.options.property && (this.properties[ w.options.property ] != undefined))
+				if(w.options && w.options.property && this.properties[ w.options.property ])
 					w.value = JSON.parse( JSON.stringify( this.properties[ w.options.property ] ) );
 			}
 			if (info.widgets_values) {
@@ -3198,26 +3128,10 @@
         this.mode = modeTo;
         return true;
     };
-
-    /**
-     * Triggers the execution of actions that were deferred when the action was triggered
-     * @method executePendingActions
-     */    
-    LGraphNode.prototype.executePendingActions = function() {
-        if(!this._waiting_actions || !this._waiting_actions.length)
-            return;
-        for(var i = 0; i < this._waiting_actions.length;++i)
-        {
-            var p = this._waiting_actions[i];
-            this.onAction(p[0],p[1],p[2],p[3],p[4]);
-        }        
-        this._waiting_actions.length = 0;
-    }
-
     
     /**
      * Triggers the node code execution, place a boolean/counter to mark the node as being executed
-     * @method doExecute
+     * @method execute
      * @param {*} param
      * @param {*} options
      */
@@ -3241,8 +3155,6 @@
                 this.graph.nodes_executedAction[this.id] = options.action_call;
             }
         }
-        else {
-        }
         this.execute_triggered = 2; // the nFrames it will be used (-- each step), means "how old" is the event
         if(this.onAfterExecuteNode) this.onAfterExecuteNode(param, options); // callback
     };
@@ -3253,7 +3165,7 @@
      * @param {String} action name
      * @param {*} param
      */
-    LGraphNode.prototype.actionDo = function(action, param, options, action_slot ) {
+    LGraphNode.prototype.actionDo = function(action, param, options) {
         options = options || {};
         if (this.onAction){
             
@@ -3262,7 +3174,7 @@
             
             this.graph.nodes_actioning[this.id] = (action?action:"actioning"); //.push(this.id);
             
-            this.onAction(action, param, options, action_slot);
+            this.onAction(action, param, options);
             
             this.graph.nodes_actioning[this.id] = false; //.pop();
             
@@ -3370,19 +3282,8 @@
 				if (!options.action_call) options.action_call = this.id+"_act_"+Math.floor(Math.random()*9999);
                 //pass the action name
                 var target_connection = node.inputs[link_info.target_slot];
-
-                //instead of executing them now, it will be executed in the next graph loop, to ensure data flow
-                if(LiteGraph.use_deferred_actions && node.onExecute)
-                {
-                    if(!node._waiting_actions)
-                        node._waiting_actions = [];
-                    node._waiting_actions.push([target_connection.name, param, options, link_info.target_slot]);
-                }
-                else
-                {
-                    // wrap node.onAction(target_connection.name, param);
-                    node.actionDo( target_connection.name, param, options, link_info.target_slot );
-                }
+				// wrap node.onAction(target_connection.name, param);
+                node.actionDo(target_connection.name, param, options);
             }
         }
     };
@@ -3874,42 +3775,16 @@
 
     /**
      * returns the bounding of the object, used for rendering purposes
+     * bounding is: [topleft_cornerx, topleft_cornery, width, height]
      * @method getBounding
-     * @param out {Float32Array[4]?} [optional] a place to store the output, to free garbage
-     * @param compute_outer {boolean?} [optional] set to true to include the shadow and connection points in the bounding calculation
-     * @return {Float32Array[4]} the bounding box in format of [topleft_cornerx, topleft_cornery, width, height]
+     * @return {Float32Array[4]} the total size
      */
-    LGraphNode.prototype.getBounding = function(out, compute_outer) {
+    LGraphNode.prototype.getBounding = function(out) {
         out = out || new Float32Array(4);
-        const nodePos = this.pos;
-        const isCollapsed = this.flags.collapsed;
-        const nodeSize = this.size;
-        
-        let left_offset = 0;
-        // 1 offset due to how nodes are rendered
-        let right_offset =  1 ;
-        let top_offset = 0;
-        let bottom_offset = 0;
-        
-        if (compute_outer) {
-            // 4 offset for collapsed node connection points
-            left_offset = 4;
-            // 6 offset for right shadow and collapsed node connection points
-            right_offset = 6 + left_offset;
-            // 4 offset for collapsed nodes top connection points
-            top_offset = 4;
-            // 5 offset for bottom shadow and collapsed node connection points
-            bottom_offset = 5 + top_offset;
-        }
-        
-        out[0] = nodePos[0] - left_offset;
-        out[1] = nodePos[1] - LiteGraph.NODE_TITLE_HEIGHT - top_offset;
-        out[2] = isCollapsed ?
-            (this._collapsed_width || LiteGraph.NODE_COLLAPSED_WIDTH) + right_offset :
-            nodeSize[0] + right_offset;
-        out[3] = isCollapsed ?
-            LiteGraph.NODE_TITLE_HEIGHT + bottom_offset :
-            nodeSize[1] + LiteGraph.NODE_TITLE_HEIGHT + bottom_offset;
+        out[0] = this.pos[0] - 4;
+        out[1] = this.pos[1] - LiteGraph.NODE_TITLE_HEIGHT;
+        out[2] = this.size[0] + 4;
+        out[3] = this.flags.collapsed ? LiteGraph.NODE_TITLE_HEIGHT : this.size[1] + LiteGraph.NODE_TITLE_HEIGHT;
 
         if (this.onBounding) {
             this.onBounding(out);
@@ -5475,6 +5350,7 @@ LGraphNode.prototype.executeAction = function(action)
 
         this.selected_nodes = {};
         this.selected_group = null;
+        this.selected_group_top = false;
 
         this.visible_nodes = [];
         this.node_dragged = null;
@@ -5745,7 +5621,7 @@ LGraphNode.prototype.executeAction = function(action)
 
         //Keyboard ******************
         this._key_callback = this.processKey.bind(this);
-        canvas.setAttribute("tabindex",1); //otherwise key events are ignored
+
         canvas.addEventListener("keydown", this._key_callback, true);
         document.addEventListener("keyup", this._key_callback, true); //in document, otherwise it doesn't fire keyup
 
@@ -5991,6 +5867,8 @@ LGraphNode.prototype.executeAction = function(action)
             if (this.onMouse(e) == true)
                 return;
         }
+
+
 
 		//left button mouse / single finger
         if (e.which == 1 && !this.pointer_is_double)
@@ -6273,6 +6151,12 @@ LGraphNode.prototype.executeAction = function(action)
 						} else {
 							this.selected_group.recomputeInsideNodes();
 						}
+
+                        var an = this.selected_group.font_size || LiteGraph.DEFAULT_GROUP_FONT_SIZE, 
+                            cn = an * 1.4;
+                        if (LiteGraph.isInsideRectangle(e.canvasX, e.canvasY, this.selected_group.pos[0], this.selected_group.pos[1], this.selected_group.size[0], cn) ) {
+                            this.selected_group_top = true; 
+                        }
 					}
 
 					if (is_double_click && !this.read_only && this.allow_searchbox) {
@@ -6471,28 +6355,31 @@ LGraphNode.prototype.executeAction = function(action)
         //get node over
         var node = this.graph.getNodeOnPos(e.canvasX,e.canvasY,this.visible_nodes);
 
+
         if (this.dragging_rectangle)
 		{
             this.dragging_rectangle[2] = e.canvasX - this.dragging_rectangle[0];
             this.dragging_rectangle[3] = e.canvasY - this.dragging_rectangle[1];
             this.dirty_canvas = true;
         } 
-		else if (this.selected_group && !this.read_only)
+		else if (this.selected_group && !this.read_only && this.selected_group_top)
 		{
-            //moving/resizing a group
-            if (this.selected_group_resizing) {
-                this.selected_group.size = [
-                    e.canvasX - this.selected_group.pos[0],
-                    e.canvasY - this.selected_group.pos[1]
-                ];
-            } else {
-                var deltax = delta[0] / this.ds.scale;
-                var deltay = delta[1] / this.ds.scale;
-                this.selected_group.move(deltax, deltay, e.ctrlKey);
-                if (this.selected_group._nodes.length) {
-                    this.dirty_canvas = true;
-                }
+            // moving from top only
+
+            var deltax = delta[0] / this.ds.scale;
+            var deltay = delta[1] / this.ds.scale;
+            this.selected_group.move(deltax, deltay, e.ctrlKey);
+            if (this.selected_group._nodes.length) {
+                this.dirty_canvas = true;
             }
+            
+            this.dirty_bgcanvas = true;
+        }else if (this.selected_group && !this.read_only && this.selected_group_resizing){
+            //resizing a group
+            this.selected_group.size = [
+                e.canvasX - this.selected_group.pos[0],
+                e.canvasY - this.selected_group.pos[1]
+            ];
             this.dirty_bgcanvas = true;
         } else if (this.dragging_canvas) {
         	////console.log("pointerevents: processMouseMove is dragging_canvas");
@@ -6735,6 +6622,7 @@ LGraphNode.prototype.executeAction = function(action)
 
             //left button
             this.node_widget = null;
+            this.selected_group_top = false;
 
             if (this.selected_group) {
                 var diffx =
@@ -7249,8 +7137,6 @@ LGraphNode.prototype.executeAction = function(action)
 
         for (var i = 0; i < selected_nodes_array.length; ++i) {
             var node = selected_nodes_array[i];
-            if(node.clonable === false)
-                continue;
             var cloned = node.clone();
             if(!cloned)
             {
@@ -7800,7 +7686,7 @@ LGraphNode.prototype.executeAction = function(action)
                 continue;
             }
 
-            if (!overlapBounding(this.visible_area, n.getBounding(temp, true))) {
+            if (!overlapBounding(this.visible_area, n.getBounding(temp))) {
                 continue;
             } //out of the visible area
 
@@ -10102,7 +9988,6 @@ LGraphNode.prototype.executeAction = function(action)
         var x = pos[0] - node.pos[0];
         var y = pos[1] - node.pos[1];
         var width = node.size[0];
-        var deltaX = event.deltaX || event.deltax || 0;
         var that = this;
         var ref_window = this.getCanvasWindow();
 
@@ -10149,8 +10034,8 @@ LGraphNode.prototype.executeAction = function(action)
 				case "combo":
 					var old_value = w.value;
 					if (event.type == LiteGraph.pointerevents_method+"move" && w.type == "number") {
-                        if(deltaX)
-						    w.value += deltaX * 0.1 * (w.options.step || 1);
+                        if(event.deltaX)
+						    w.value += event.deltaX * 0.1 * (w.options.step || 1);
 						if ( w.options.min != null && w.value < w.options.min ) {
 							w.value = w.options.min;
 						}
@@ -10315,6 +10200,9 @@ LGraphNode.prototype.executeAction = function(action)
             ctx.strokeStyle = group.color || "#335";
             var pos = group._pos;
             var size = group._size;
+            var font_size = group.font_size || LiteGraph.DEFAULT_GROUP_FONT_SIZE;
+
+
             ctx.globalAlpha = 0.25 * this.editor_alpha;
             ctx.beginPath();
             ctx.rect(pos[0] + 0.5, pos[1] + 0.5, size[0], size[1]);
@@ -10328,11 +10216,20 @@ LGraphNode.prototype.executeAction = function(action)
             ctx.lineTo(pos[0] + size[0], pos[1] + size[1] - 10);
             ctx.fill();
 
-            var font_size =
-                group.font_size || LiteGraph.DEFAULT_GROUP_FONT_SIZE;
+            ctx.globalAlpha = .25 * this.editor_alpha;
+            ctx.beginPath();
+            ctx.rect(pos[0] + .5, pos[1] + .5, size[0], font_size * 1.4);
+            ctx.fill();
+            ctx.globalAlpha = this.editor_alpha
+
+
             ctx.font = font_size + "px Arial";
 			ctx.textAlign = "left";
             ctx.fillText(group.title, pos[0] + 4, pos[1] + font_size);
+
+
+
+
         }
 
         ctx.restore();
@@ -11627,8 +11524,7 @@ LGraphNode.prototype.executeAction = function(action)
         var input = dialog.querySelector("input");
         if (input) {
             input.addEventListener("blur", function(e) {
-                if(that.search_box)
-                    this.focus();
+                this.focus();
             });
             input.addEventListener("keydown", function(e) {
                 if (e.keyCode == 38) {
@@ -11641,7 +11537,6 @@ LGraphNode.prototype.executeAction = function(action)
                     //ESC
                     dialog.close();
                 } else if (e.keyCode == 13) {
-                    refreshHelper();
                     if (selected) {
                         select(selected.innerHTML);
                     } else if (first) {
@@ -15411,48 +15306,6 @@ if (typeof exports != "undefined") {
 
     LiteGraph.registerNodeType("basic/file", ConstantFile);
 
-
-//to store json objects
-function JSONParse() {
-	this.addInput("parse", LiteGraph.ACTION);
-	this.addInput("json", "string");
-	this.addOutput("done", LiteGraph.EVENT);
-	this.addOutput("object", "object");
-	this.widget = this.addWidget("button","parse","",this.parse.bind(this));
-	this._str = null;
-	this._obj = null;
-}
-
-JSONParse.title = "JSON Parse";
-JSONParse.desc = "Parses JSON String into object";
-
-JSONParse.prototype.parse = function()
-{
-	if(!this._str)
-		return;
-
-	try {
-		this._str = this.getInputData(1);
-		this._obj = JSON.parse(this._str);
-		this.boxcolor = "#AEA";
-		this.triggerSlot(0);
-	} catch (err) {
-		this.boxcolor = "red";
-	}
-}
-
-JSONParse.prototype.onExecute = function() {
-	this._str = this.getInputData(1);
-	this.setOutputData(1, this._obj);
-};
-
-JSONParse.prototype.onAction = function(name) {
-	if(name == "parse")
-		this.parse();
-}
-
-LiteGraph.registerNodeType("basic/jsonparse", JSONParse);	
-
 	//to store json objects
     function ConstantData() {
         this.addOutput("data", "object");
@@ -16286,63 +16139,6 @@ LiteGraph.registerNodeType("basic/jsonparse", JSONParse);
     };
 
     LiteGraph.registerNodeType("events/sequence", Sequence);
-
-
-   //Sequence of events
-   function WaitAll() {
-    var that = this;
-    this.addInput("", LiteGraph.ACTION);
-    this.addInput("", LiteGraph.ACTION);
-    this.addOutput("", LiteGraph.EVENT);
-    this.addWidget("button","+",null,function(){
-        that.addInput("", LiteGraph.ACTION);
-        that.size[0] = 90;
-    });
-    this.size = [90, 70];
-    this.ready = [];
-}
-
-WaitAll.title = "WaitAll";
-WaitAll.desc = "Wait until all input events arrive then triggers output";
-
-WaitAll.prototype.getTitle = function() {
-    return "";
-};
-
-WaitAll.prototype.onDrawBackground = function(ctx)
-{
-    if (this.flags.collapsed) {
-        return;
-    }
-    for(var i = 0; i < this.inputs.length; ++i)
-    {
-        var y = i * LiteGraph.NODE_SLOT_HEIGHT + 10;
-        ctx.fillStyle = this.ready[i] ? "#AFB" : "#000";
-        ctx.fillRect(20, y, 10, 10);
-    }
-}
-
-WaitAll.prototype.onAction = function(action, param, options, slot_index) {
-    if(slot_index == null)
-        return;
-
-    //check all
-    this.ready.length = this.outputs.length;
-    this.ready[slot_index] = true;
-    for(var i = 0; i < this.ready.length;++i)
-        if(!this.ready[i])
-            return;
-    //pass
-    this.reset();
-    this.triggerSlot(0);
-};
-
-WaitAll.prototype.reset = function()
-{
-    this.ready.length = 0;
-}
-
-LiteGraph.registerNodeType("events/waitAll", WaitAll);    
 
 
     //Sequencer for events
@@ -34506,68 +34302,5 @@ LiteGraph.registerNodeType("audio/waveShaper", LGAudioWaveShaper);
     };
 
     LiteGraph.registerNodeType("network/sillyclient", LGSillyClient);
-
-//HTTP Request
-function HTTPRequestNode() {
-	var that = this;
-	this.addInput("request", LiteGraph.ACTION);
-	this.addInput("url", "string");
-	this.addProperty("url", "");
-	this.addOutput("ready", LiteGraph.EVENT);
-    this.addOutput("data", "string");
-	this.addWidget("button", "Fetch", null, this.fetch.bind(this));
-	this._data = null;
-	this._fetching = null;
-}
-
-HTTPRequestNode.title = "HTTP Request";
-HTTPRequestNode.desc = "Fetch data through HTTP";
-
-HTTPRequestNode.prototype.fetch = function()
-{
-	var url = this.properties.url;
-	if(!url)
-		return;
-
-	this.boxcolor = "#FF0";
-	var that = this;
-	this._fetching = fetch(url)
-	.then(resp=>{
-		if(!resp.ok)
-		{
-			this.boxcolor = "#F00";
-			that.trigger("error");
-		}
-		else
-		{
-			this.boxcolor = "#0F0";
-			return resp.text();
-		}
-	})
-	.then(data=>{
-		that._data = data;
-		that._fetching = null;
-		that.trigger("ready");
-	});
-}
-
-HTTPRequestNode.prototype.onAction = function(evt)
-{
-	if(evt == "request")
-		this.fetch();
-}
-
-HTTPRequestNode.prototype.onExecute = function() {
-	this.setOutputData(1, this._data);
-};
-
-HTTPRequestNode.prototype.onGetOutputs = function() {
-	return [["error",LiteGraph.EVENT]];
-}
-
-LiteGraph.registerNodeType("network/httprequest", HTTPRequestNode);
-
-
-	
 })(this);
 
